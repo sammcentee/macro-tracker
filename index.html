@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Macros">
+<meta name="theme-color" content="#111418">
+<title>Macros</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <button id="prevDay" class="icon" aria-label="Previous day">‹</button>
+  <h1 id="dayLabel">Today</h1>
+  <button id="nextDay" class="icon" aria-label="Next day">›</button>
+  <button id="openSettings" class="icon" aria-label="Settings">⚙</button>
+</header>
+
+<main>
+  <section id="totals"></section>
+  <ul id="entries"></ul>
+  <p id="emptyDay" class="muted">Nothing logged for this day.</p>
+</main>
+
+<footer>
+  <button id="backupStatus" class="status"></button>
+  <div class="actions">
+    <button id="scanBtn">Scan</button>
+    <button id="addBtn" class="primary">+ Add food</button>
+  </div>
+</footer>
+
+<!-- Pick a saved food, make a new one, or quick add -->
+<dialog id="addDialog">
+  <form method="dialog" class="sheet">
+    <div class="sheet-head"><h2>Add food</h2><button value="cancel" class="icon" formnovalidate>✕</button></div>
+    <input id="foodSearch" type="search" placeholder="Search saved foods" autocomplete="off">
+    <ul id="foodList" class="pick"></ul>
+    <div class="row">
+      <button type="button" id="newFoodBtn">New food</button>
+      <button type="button" id="quickAddBtn">Quick add</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Amount for a saved food -->
+<dialog id="amountDialog">
+  <form method="dialog" class="sheet">
+    <div class="sheet-head"><h2 id="amountTitle"></h2><button value="cancel" class="icon" formnovalidate>✕</button></div>
+    <label>Amount (g)<input id="amountGrams" type="number" inputmode="decimal" min="0" step="any"></label>
+    <div id="servingButtons" class="row"></div>
+    <p id="amountPreview" class="preview"></p>
+    <div class="row">
+      <button type="button" id="editFoodBtn">Edit food</button>
+      <button type="submit" value="ok" class="primary" id="amountOk">Add</button>
+    </div>
+    <button type="button" id="deleteEntryBtn" class="danger" hidden>Delete entry</button>
+  </form>
+</dialog>
+
+<!-- Create or edit a saved food (values per 100 g) -->
+<dialog id="foodDialog">
+  <form method="dialog" class="sheet">
+    <div class="sheet-head"><h2 id="foodTitle">New food</h2><button value="cancel" class="icon" formnovalidate>✕</button></div>
+    <p id="foodSource" class="muted"></p>
+    <label>Name<input id="foodName" required></label>
+    <p class="muted">Values per 100 g</p>
+    <div class="grid4">
+      <label>kcal<input id="foodKcal" type="number" inputmode="decimal" min="0" step="any" required></label>
+      <label>Protein<input id="foodProtein" type="number" inputmode="decimal" min="0" step="any" required></label>
+      <label>Carbs<input id="foodCarbs" type="number" inputmode="decimal" min="0" step="any" required></label>
+      <label>Fat<input id="foodFat" type="number" inputmode="decimal" min="0" step="any" required></label>
+    </div>
+    <label>Serving size (g, optional)<input id="foodServing" type="number" inputmode="decimal" min="0" step="any"></label>
+    <div class="row">
+      <button type="button" id="deleteFoodBtn" class="danger" hidden>Delete food</button>
+      <button type="submit" value="ok" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Quick add or edit a one-off entry with totals -->
+<dialog id="quickDialog">
+  <form method="dialog" class="sheet">
+    <div class="sheet-head"><h2 id="quickTitle">Quick add</h2><button value="cancel" class="icon" formnovalidate>✕</button></div>
+    <label>Name<input id="quickName" placeholder="e.g. Restaurant dinner"></label>
+    <div class="grid4">
+      <label>kcal<input id="quickKcal" type="number" inputmode="decimal" min="0" step="any" required></label>
+      <label>Protein<input id="quickProtein" type="number" inputmode="decimal" min="0" step="any" value="0"></label>
+      <label>Carbs<input id="quickCarbs" type="number" inputmode="decimal" min="0" step="any" value="0"></label>
+      <label>Fat<input id="quickFat" type="number" inputmode="decimal" min="0" step="any" value="0"></label>
+    </div>
+    <div class="row">
+      <button type="button" id="deleteQuickBtn" class="danger" hidden>Delete entry</button>
+      <button type="submit" value="ok" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Barcode scanner -->
+<dialog id="scanDialog">
+  <form method="dialog" class="sheet">
+    <div class="sheet-head"><h2>Scan barcode</h2><button value="cancel" class="icon" formnovalidate>✕</button></div>
+    <video id="scanVideo" playsinline muted></video>
+    <p id="scanMsg" class="muted">Point the camera at the barcode.</p>
+    <div class="row">
+      <input id="manualBarcode" inputmode="numeric" placeholder="Or type the barcode">
+      <button type="button" id="manualBarcodeBtn">Look up</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Settings -->
+<dialog id="settingsDialog">
+  <form method="dialog" class="sheet">
+    <div class="sheet-head"><h2>Settings</h2><button value="cancel" class="icon" formnovalidate>✕</button></div>
+    <h3>Daily targets</h3>
+    <div class="grid4">
+      <label>kcal<input id="tKcal" type="number" inputmode="decimal" min="0" step="any"></label>
+      <label>Protein<input id="tProtein" type="number" inputmode="decimal" min="0" step="any"></label>
+      <label>Carbs<input id="tCarbs" type="number" inputmode="decimal" min="0" step="any"></label>
+      <label>Fat<input id="tFat" type="number" inputmode="decimal" min="0" step="any"></label>
+    </div>
+    <h3>Automatic backup (GitHub)</h3>
+    <label>Repository (owner/name)<input id="ghRepo" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+    <label>Token<input id="ghToken" type="password" autocomplete="off" placeholder="github_pat_..."></label>
+    <div class="row">
+      <button type="button" id="backupNowBtn">Back up now</button>
+      <button type="button" id="restoreBtn">Restore from backup</button>
+    </div>
+    <h3>File backup</h3>
+    <div class="row">
+      <button type="button" id="exportBtn">Export file</button>
+      <button type="button" id="importBtn">Import file</button>
+      <input type="file" id="importFile" accept="application/json,.json" hidden>
+    </div>
+    <p id="settingsMsg" class="muted"></p>
+    <button type="submit" value="ok" class="primary">Save settings</button>
+  </form>
+</dialog>
+
+<script src="vendor/zxing.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
