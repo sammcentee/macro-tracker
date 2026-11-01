@@ -22,12 +22,18 @@
 
 <main>
   <section id="totals"></section>
+  <section id="presets">
+    <div class="presets-head"><h3>Presets</h3><button id="managePresetsBtn" class="link">Edit</button></div>
+    <div id="presetChips" class="chips"></div>
+  </section>
   <ul id="entries"></ul>
   <p id="emptyDay" class="muted">Nothing logged for this day.</p>
 </main>
 
+<div id="toast" hidden><span id="toastText"></span><button id="toastUndo" class="link">Undo</button></div>
+
 <footer>
-  <button id="backupStatus" class="status"></button>
+  <button id="syncStatus" class="status"></button>
   <div class="actions">
     <button id="scanBtn">Scan</button>
     <button id="addBtn" class="primary">+ Add food</button>
@@ -56,6 +62,7 @@
     <p id="amountPreview" class="preview"></p>
     <div class="row">
       <button type="button" id="editFoodBtn">Edit food</button>
+      <button type="button" id="amountPresetBtn">Save preset</button>
       <button type="submit" value="ok" class="primary" id="amountOk">Add</button>
     </div>
     <button type="button" id="deleteEntryBtn" class="danger" hidden>Delete entry</button>
@@ -96,8 +103,22 @@
     </div>
     <div class="row">
       <button type="button" id="deleteQuickBtn" class="danger" hidden>Delete entry</button>
+      <button type="button" id="quickPresetBtn">Save preset</button>
       <button type="submit" value="ok" class="primary">Save</button>
     </div>
+  </form>
+</dialog>
+
+<!-- Manage presets and make a meal preset from the day's entries -->
+<dialog id="presetsDialog">
+  <form method="dialog" class="sheet">
+    <div class="sheet-head"><h2>Presets</h2><button value="cancel" class="icon" formnovalidate>✕</button></div>
+    <ul id="presetList" class="pick"></ul>
+    <h3>New meal preset</h3>
+    <p class="muted">Tick entries from the day you are viewing.</p>
+    <ul id="mealEntryList" class="pick"></ul>
+    <label>Name<input id="mealName" placeholder="e.g. Mince + rice bowl"></label>
+    <button type="button" id="saveMealBtn" class="primary">Save meal preset</button>
   </form>
 </dialog>
 
@@ -125,19 +146,13 @@
       <label>Carbs<input id="tCarbs" type="number" inputmode="decimal" min="0" step="any"></label>
       <label>Fat<input id="tFat" type="number" inputmode="decimal" min="0" step="any"></label>
     </div>
-    <h3>Automatic backup (GitHub)</h3>
+    <h3>Sync (GitHub)</h3>
+    <p class="muted">Enter the same repository and token on each device. Your log then stays the same everywhere.</p>
     <label>Repository (owner/name)<input id="ghRepo" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
     <label>Token<input id="ghToken" type="password" autocomplete="off" placeholder="github_pat_..."></label>
-    <div class="row">
-      <button type="button" id="backupNowBtn">Back up now</button>
-      <button type="button" id="restoreBtn">Restore from backup</button>
-    </div>
-    <h3>File backup</h3>
-    <div class="row">
-      <button type="button" id="exportBtn">Export file</button>
-      <button type="button" id="importBtn">Import file</button>
-      <input type="file" id="importFile" accept="application/json,.json" hidden>
-    </div>
+    <button type="button" id="syncNowBtn">Sync now</button>
+    <h3>History</h3>
+    <button type="button" id="csvBtn">Export history (CSV)</button>
     <p id="settingsMsg" class="muted"></p>
     <button type="submit" value="ok" class="primary">Save settings</button>
   </form>

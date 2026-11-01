@@ -58,3 +58,17 @@ h3 { font-size: 15px; margin: 18px 0 4px; }
 .pick li { background: var(--bg); }
 .preview { font-size: 15px; }
 #scanVideo { width: 100%; border-radius: 10px; background: #000; aspect-ratio: 4/3; object-fit: cover; margin-top: 8px; }
+
+button.link { background: none; border: none; color: var(--accent); padding: 4px 6px; }
+#presets { margin-top: 12px; }
+.presets-head { display: flex; justify-content: space-between; align-items: center; }
+.presets-head h3 { margin: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.chips button { padding: 8px 12px; border-radius: 18px; font-size: 15px; }
+.chips button .sub { margin-left: 6px; }
+#toast { position: fixed; left: 12px; right: 12px; bottom: calc(120px + env(safe-area-inset-bottom)); display: flex;
+  justify-content: space-between; align-items: center; background: #2a313b; border-radius: 10px; padding: 8px 12px; }
+.pick li input[type=checkbox] { width: 22px; height: 22px; margin: 0 8px 0 0; flex: none; }
+.pick li label { display: flex; align-items: center; flex: 1; margin: 0; color: var(--text); font-size: 15px; }
+.pick li .btns { display: flex; gap: 4px; }
+#toast[hidden] { display: none; }
