@@ -57,7 +57,7 @@
 <dialog id="amountDialog">
   <form method="dialog" class="sheet">
     <div class="sheet-head"><h2 id="amountTitle"></h2><button value="cancel" class="icon" formnovalidate>✕</button></div>
-    <label>Amount (g)<input id="amountGrams" type="number" inputmode="decimal" min="0" step="any"></label>
+    <label>Amount (<span id="amountUnit">g</span>)<input id="amountGrams" type="number" inputmode="decimal" min="0" step="any"></label>
     <div id="servingButtons" class="row"></div>
     <p id="amountPreview" class="preview"></p>
     <div class="row">
@@ -75,14 +75,14 @@
     <div class="sheet-head"><h2 id="foodTitle">New food</h2><button value="cancel" class="icon" formnovalidate>✕</button></div>
     <p id="foodSource" class="muted"></p>
     <label>Name<input id="foodName" required></label>
-    <p class="muted">Values per 100 g</p>
+    <label class="inline">Values per 100 <select id="foodUnit"><option value="g">g</option><option value="ml">ml</option></select></label>
     <div class="grid4">
       <label>kcal<input id="foodKcal" type="number" inputmode="decimal" min="0" step="any" required></label>
       <label>Protein<input id="foodProtein" type="number" inputmode="decimal" min="0" step="any" required></label>
       <label>Carbs<input id="foodCarbs" type="number" inputmode="decimal" min="0" step="any" required></label>
       <label>Fat<input id="foodFat" type="number" inputmode="decimal" min="0" step="any" required></label>
     </div>
-    <label>Serving size (g, optional)<input id="foodServing" type="number" inputmode="decimal" min="0" step="any"></label>
+    <label>Serving size (optional)<input id="foodServing" type="number" inputmode="decimal" min="0" step="any"></label>
     <div class="row">
       <button type="button" id="deleteFoodBtn" class="danger" hidden>Delete food</button>
       <button type="submit" value="ok" class="primary">Save</button>

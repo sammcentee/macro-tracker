@@ -31,9 +31,33 @@ function el(tag, cls, text) {
 // Every food and entry has an id and an updatedAt time. A deleted record stays as a
 // tombstone ({ id, deleted, updatedAt }) so that the deletion syncs to other devices.
 
+// Reject data that a merge could damage: every record needs a unique id, and every live
+// record needs a name and numeric macros.
 function isValidData(d) {
-  return d && typeof d === 'object' && Array.isArray(d.entries) && Array.isArray(d.foods) && d.targets;
+  if (!d || typeof d !== 'object' || !d.targets || typeof d.targets !== 'object') return false;
+  for (const key of ['foods', 'entries', 'presets']) {
+    const list = d[key] ?? [];
+    if (!Array.isArray(list)) return false;
+    const ids = new Set();
+    for (const r of list) {
+      if (!r || typeof r.id !== 'string' || ids.has(r.id)) return false;
+      ids.add(r.id);
+      if (r.deleted) continue;
+      if (typeof r.name !== 'string' || MACROS.some(([k]) => !Number.isFinite(r[k]))) return false;
+      if (key === 'entries' && typeof r.date !== 'string') return false;
+    }
+  }
+  return true;
 }
+
+// A new version time is later than the version it replaces, even if this device's clock is behind.
+function stamp(prev) {
+  return new Date(Math.max(Date.now(), prev ? Date.parse(prev) + 1 : 0)).toISOString();
+}
+
+// Same time on both sides: pick by content, so that every device picks the same version.
+const isNewer = (time, other, value, otherValue) =>
+  time > other || (time === other && JSON.stringify(value) > JSON.stringify(otherValue));
 
 // Bring any saved data (including the first version, without updatedAt) to the current shape.
 function normalize(d) {
@@ -56,11 +80,11 @@ function merge(a, b) {
     const map = new Map();
     for (const r of [...x, ...y]) {
       const cur = map.get(r.id);
-      if (!cur || r.updatedAt > cur.updatedAt) map.set(r.id, r);
+      if (!cur || isNewer(r.updatedAt, cur.updatedAt, r, cur)) map.set(r.id, r);
     }
     return [...map.values()].sort(byId);
   };
-  const bNewer = b.targetsUpdatedAt > a.targetsUpdatedAt;
+  const bNewer = isNewer(b.targetsUpdatedAt, a.targetsUpdatedAt, b.targets, a.targets);
   return {
     version: 2,
     targets: bNewer ? b.targets : a.targets,
@@ -77,12 +101,23 @@ function loadJSON(key, fallback) {
 
 let data = normalize(loadJSON(DATA_KEY, {}));
 let meta = { repo: 'sammcentee/macro-tracker-data', token: '', dirty: false, lastSyncAt: null, lastError: null,
-  ...loadJSON(META_KEY, {}) };
+  usage: {}, ...loadJSON(META_KEY, {}) };
 let day = dateKey(new Date());
 let changeSeq = 0;
+let saveError = null; // set when this device cannot save its data, for example when storage is full
 
-function saveMeta() { localStorage.setItem(META_KEY, JSON.stringify(meta)); }
-function saveLocal() { localStorage.setItem(DATA_KEY, JSON.stringify(data)); }
+function store(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); return null; } catch (err) { return err.name || String(err); }
+}
+function saveMeta() { store(META_KEY, meta); }
+// Other tabs on this device share the same storage, so merge what they saved before writing.
+function saveLocal() {
+  data = merge(data, normalize(loadJSON(DATA_KEY, {})));
+  saveError = store(DATA_KEY, data);
+}
+
+// Last food amount and time of use stay on this device. They are not edits to the food.
+const usageOf = (foodId) => meta.usage[foodId] || {};
 
 // Every change goes through here: save locally, then sync.
 function commit() {
@@ -99,8 +134,11 @@ const findEntry = (id) => data.entries.find((e) => e.id === id && !e.deleted);
 
 function remove(list, id) {
   const i = list.findIndex((r) => r.id === id);
-  if (i >= 0) list[i] = { id, deleted: true, updatedAt: now() };
+  if (i >= 0) list[i] = { id, deleted: true, updatedAt: stamp(list[i].updatedAt) };
 }
+
+const unitOf = (food) => food.unit || 'g';
+const amountText = (e) => (e.grams ? `${e.grams} ${e.unit || 'g'}` : ''); // "grams" holds the amount in g or ml
 
 // ---------- Rendering ----------
 
@@ -150,17 +188,25 @@ function render() {
   const list = $('entries');
   list.replaceChildren();
   for (const e of entries) {
-    const li = el('li');
     const left = el('div');
     left.append(el('div', 'name', e.name), el('div', 'sub',
-      `${e.grams ? e.grams + ' g · ' : ''}P ${round('protein', e.protein)} · C ${round('carbs', e.carbs)} · F ${round('fat', e.fat)}`));
-    li.append(left, el('div', 'kcal', `${round('kcal', e.kcal)} kcal`));
-    li.onclick = () => editEntry(e.id);
-    list.append(li);
+      `${e.grams ? amountText(e) + ' · ' : ''}P ${round('protein', e.protein)} · C ${round('carbs', e.carbs)} · F ${round('fat', e.fat)}`));
+    list.append(rowButton(left, `${round('kcal', e.kcal)} kcal`, () => editEntry(e.id)));
   }
   $('emptyDay').hidden = entries.length > 0;
   renderPresets();
   renderSyncStatus();
+}
+
+// A list item that is a real button, so that it works with the keyboard too.
+function rowButton(left, right, onclick) {
+  const li = el('li');
+  const b = el('button', 'row-btn');
+  b.type = 'button';
+  b.append(left, el('div', 'kcal', right));
+  b.onclick = onclick;
+  li.append(b);
+  return li;
 }
 
 // ---------- Foods and entries ----------
@@ -175,16 +221,13 @@ function renderFoodList() {
   const q = $('foodSearch').value.trim().toLowerCase();
   const foods = live(data.foods)
     .filter((f) => !q || f.name.toLowerCase().includes(q))
-    .sort((a, b) => (b.lastUsed || '').localeCompare(a.lastUsed || '') || a.name.localeCompare(b.name));
+    .sort((a, b) => (usageOf(b.id).lastUsed || '').localeCompare(usageOf(a.id).lastUsed || '') || a.name.localeCompare(b.name));
   const list = $('foodList');
   list.replaceChildren();
   for (const f of foods) {
-    const li = el('li');
     const left = el('div');
-    left.append(el('div', 'name', f.name), el('div', 'sub', `per 100 g: P ${f.protein} · C ${f.carbs} · F ${f.fat}`));
-    li.append(left, el('div', 'kcal', `${round('kcal', f.kcal)} kcal`));
-    li.onclick = () => { $('addDialog').close(); openAmount(f.id, null); };
-    list.append(li);
+    left.append(el('div', 'name', f.name), el('div', 'sub', `per 100 ${unitOf(f)}: P ${f.protein} · C ${f.carbs} · F ${f.fat}`));
+    list.append(rowButton(left, `${round('kcal', f.kcal)} kcal`, () => { $('addDialog').close(); openAmount(f.id, null); }));
   }
   if (!foods.length) list.append(el('li', 'muted', live(data.foods).length ? 'No match.' : 'No saved foods yet. Tap New food or Scan.'));
 }
@@ -194,15 +237,17 @@ let amountCtx = null; // { foodId, entryId }
 
 function openAmount(foodId, entryId) {
   const food = findFood(foodId);
+  if (!food) return; // a sync deleted it
   const entry = entryId && findEntry(entryId);
   amountCtx = { foodId, entryId };
   $('amountTitle').textContent = food.name;
-  $('amountGrams').value = entry ? entry.grams : (food.lastGrams || food.serving || 100);
+  $('amountUnit').textContent = unitOf(food);
+  $('amountGrams').value = entry ? entry.grams : (usageOf(food.id).lastGrams || food.serving || 100);
   const sb = $('servingButtons');
   sb.replaceChildren();
   if (food.serving) {
     for (const n of [1, 2]) {
-      const b = el('button', '', `${n} serving${n > 1 ? 's' : ''} (${n * food.serving} g)`);
+      const b = el('button', '', `${n} serving${n > 1 ? 's' : ''} (${n * food.serving} ${unitOf(food)})`);
       b.type = 'button';
       b.onclick = () => { $('amountGrams').value = n * food.serving; updateAmountPreview(); };
       sb.append(b);
@@ -226,11 +271,11 @@ function saveAmount() {
   const food = findFood(amountCtx.foodId);
   const grams = num($('amountGrams').value);
   if (!food || !grams) return;
-  const values = { name: food.name, grams, foodId: food.id, ...macrosFor(food, grams), updatedAt: now() };
+  const values = { name: food.name, grams, unit: unitOf(food), foodId: food.id, ...macrosFor(food, grams) };
   const entry = amountCtx.entryId && findEntry(amountCtx.entryId);
-  if (entry) Object.assign(entry, values);
-  else data.entries.push({ id: uid(), date: day, time: now(), ...values });
-  Object.assign(food, { lastUsed: now(), lastGrams: grams, updatedAt: now() });
+  if (entry) Object.assign(entry, values, { updatedAt: stamp(entry.updatedAt) });
+  else data.entries.push({ id: uid(), date: day, time: now(), ...values, updatedAt: now() });
+  meta.usage[food.id] = { lastUsed: now(), lastGrams: grams };
   commit();
 }
 
@@ -255,6 +300,7 @@ function openFood(foodId, { barcode = null, prefill = null, source = '', then = 
   $('foodCarbs').value = v.carbs ?? '';
   $('foodFat').value = v.fat ?? '';
   $('foodServing').value = v.serving || '';
+  $('foodUnit').value = v.unit || 'g';
   $('deleteFoodBtn').hidden = !foodId;
   $('foodDialog').showModal();
 }
@@ -265,12 +311,12 @@ function saveFood() {
     kcal: num($('foodKcal').value), protein: num($('foodProtein').value),
     carbs: num($('foodCarbs').value), fat: num($('foodFat').value),
     serving: num($('foodServing').value) || null,
-    updatedAt: now(),
+    unit: $('foodUnit').value,
   };
   let food = foodCtx.foodId && findFood(foodCtx.foodId);
-  if (food) Object.assign(food, values);
+  if (food) Object.assign(food, values, { updatedAt: stamp(food.updatedAt) });
   else {
-    food = { id: uid(), barcode: foodCtx.barcode, ...values };
+    food = { id: uid(), barcode: foodCtx.barcode, ...values, updatedAt: now() };
     data.foods.push(food);
   }
   commit();
@@ -297,11 +343,10 @@ function saveQuick() {
     name: $('quickName').value.trim() || 'Quick add', grams: null, foodId: null,
     kcal: num($('quickKcal').value), protein: num($('quickProtein').value),
     carbs: num($('quickCarbs').value), fat: num($('quickFat').value),
-    updatedAt: now(),
   };
   const entry = quickId && findEntry(quickId);
-  if (entry) Object.assign(entry, values);
-  else data.entries.push({ id: uid(), date: day, time: now(), ...values });
+  if (entry) Object.assign(entry, values, { updatedAt: stamp(entry.updatedAt) });
+  else data.entries.push({ id: uid(), date: day, time: now(), ...values, updatedAt: now() });
   commit();
 }
 
@@ -337,8 +382,10 @@ function renderPresets() {
   if (!presets.length) box.append(el('p', 'muted', 'Use "Save preset" on any entry, then log it here with one tap.'));
 }
 
+const findPreset = (id) => data.presets.find((r) => r.id === id && !r.deleted);
+
 function logPreset(id) {
-  const p = data.presets.find((r) => r.id === id && !r.deleted);
+  const p = findPreset(id);
   if (!p) return;
   const entryId = uid();
   data.entries.push({ id: entryId, date: day, time: now(), name: p.name, grams: null, foodId: null,
@@ -369,19 +416,24 @@ function openPresets() {
     const btns = el('div', 'btns');
     const rename = el('button', '', 'Rename');
     rename.type = 'button';
+    // Look the preset up again on each tap: a sync can replace it while this list is open.
     rename.onclick = () => {
-      const name = prompt('Preset name', p.name);
-      if (!name || !name.trim()) return;
-      Object.assign(p, { name: name.trim(), updatedAt: now() });
-      commit();
+      const cur = findPreset(p.id);
+      const name = cur && prompt('Preset name', cur.name);
+      if (name && name.trim()) {
+        Object.assign(cur, { name: name.trim(), updatedAt: stamp(cur.updatedAt) });
+        commit();
+      }
       openPresets();
     };
     const del = el('button', 'danger', 'Delete');
     del.type = 'button';
     del.onclick = () => {
-      if (!confirm(`Delete preset ${p.name}?`)) return;
-      remove(data.presets, p.id);
-      commit();
+      const cur = findPreset(p.id);
+      if (cur && confirm(`Delete preset ${cur.name}?`)) {
+        remove(data.presets, cur.id);
+        commit();
+      }
       openPresets();
     };
     btns.append(rename, del);
@@ -399,7 +451,7 @@ function openPresets() {
     const box = el('input');
     box.type = 'checkbox';
     box.value = e.id;
-    label.append(box, el('span', '', `${e.name}${e.grams ? ' ' + e.grams + ' g' : ''} · ${round('kcal', e.kcal)} kcal`));
+    label.append(box, el('span', '', `${e.name}${e.grams ? ' ' + amountText(e) : ''} · ${round('kcal', e.kcal)} kcal`));
     li.append(label);
     meals.append(li);
   }
@@ -415,30 +467,32 @@ function saveMealPreset() {
   const name = $('mealName').value.trim() || items.map((e) => e.name).join(' + ');
   const m = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
   items.forEach((e) => MACROS.forEach(([k]) => { m[k] += e[k]; }));
-  addPreset(name, m, items.map((e) => `${e.name}${e.grams ? ' ' + e.grams + ' g' : ''}`).join(' + '));
+  addPreset(name, m, items.map((e) => `${e.name}${e.grams ? ' ' + amountText(e) : ''}`).join(' + '));
   openPresets();
 }
 
 // ---------- History export ----------
 
 function csvCell(v) {
-  const t = v == null ? '' : String(v);
-  return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+  let t = v == null ? '' : String(v);
+  if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; // stop Excel from reading a name as a formula
+  return /[",\r\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
 }
 
 async function exportCsv() {
-  const rows = [['date', 'time', 'name', 'grams', 'kcal', 'protein_g', 'carbs_g', 'fat_g']];
+  const rows = [['date', 'time', 'name', 'amount', 'unit', 'kcal', 'protein_g', 'carbs_g', 'fat_g']];
   const entries = live(data.entries).sort((a, b) => a.date.localeCompare(b.date) || (a.time || '').localeCompare(b.time || ''));
   for (const e of entries) {
     const time = e.time ? new Date(e.time).toLocaleTimeString('en-IE', { hour: '2-digit', minute: '2-digit' }) : '';
-    rows.push([e.date, time, e.name, e.grams ?? '', round('kcal', e.kcal), round('protein', e.protein),
+    rows.push([e.date, time, e.name, e.grams ?? '', e.grams ? e.unit || 'g' : '', round('kcal', e.kcal), round('protein', e.protein),
       round('carbs', e.carbs), round('fat', e.fat)]);
   }
   const name = `macros-history-${dateKey(new Date())}.csv`;
   const file = new File(['\uFEFF' + rows.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n'], name, { type: 'text/csv' });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file] }); } catch { /* cancelled */ }
-    return;
+    try { await navigator.share({ files: [file] }); return; } catch (err) {
+      if (err.name === 'AbortError') return; // the user closed the share sheet
+    } // any other share error: download the file instead
   }
   const a = el('a');
   a.href = URL.createObjectURL(file);
@@ -450,18 +504,21 @@ async function exportCsv() {
 // ---------- Barcode scanning ----------
 
 let reader = null;
+let scanSeq = 0; // goes up each time the scan dialog closes, so late results are ignored
 
 async function openScan() {
   $('scanMsg').textContent = 'Point the camera at the barcode.';
   $('manualBarcode').value = '';
   $('scanDialog').showModal();
+  const r = new ZXing.BrowserMultiFormatReader();
+  reader = r;
   try {
-    reader = new ZXing.BrowserMultiFormatReader();
-    await reader.decodeFromConstraints({ video: { facingMode: { ideal: 'environment' } } }, $('scanVideo'), (result) => {
-      if (result) handleBarcode(result.getText());
+    await r.decodeFromConstraints({ video: { facingMode: { ideal: 'environment' } } }, $('scanVideo'), (result) => {
+      if (result && reader === r) handleBarcode(result.getText());
     });
+    if (reader !== r) r.reset(); // the dialog closed while the camera started
   } catch (err) {
-    $('scanMsg').textContent = `Camera not available (${err.name || err.message}). Type the barcode instead.`;
+    if (reader === r) $('scanMsg').textContent = `Camera not available (${err.name || err.message}). Type the barcode instead.`;
   }
 }
 
@@ -473,6 +530,7 @@ async function handleBarcode(code) {
   code = code.trim();
   if (!code) return;
   stopScan();
+  const seq = scanSeq;
   const known = live(data.foods).find((f) => f.barcode === code);
   if (known) { $('scanDialog').close(); openAmount(known.id, null); return; }
 
@@ -481,7 +539,7 @@ async function handleBarcode(code) {
   let source = `Barcode ${code} is not in Open Food Facts. Enter the values from the label.`;
   try {
     const res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json` +
-      '?fields=product_name,brands,nutriments,serving_quantity');
+      '?fields=product_name,brands,nutriments,serving_quantity,serving_quantity_unit,product_quantity_unit');
     const json = await res.json();
     const p = json.product;
     if (json.status === 1 && p) {
@@ -492,12 +550,15 @@ async function handleBarcode(code) {
         kcal: kcal != null ? round('kcal', kcal) : '',
         protein: n.proteins_100g ?? '', carbs: n.carbohydrates_100g ?? '', fat: n.fat_100g ?? '',
         serving: num(p.serving_quantity) || null,
+        // Open Food Facts gives drinks per 100 ml in the same fields.
+        unit: [p.serving_quantity_unit, p.product_quantity_unit].includes('ml') ? 'ml' : 'g',
       };
       source = 'From Open Food Facts. Check the values against the label before you save.';
     }
   } catch {
     source = 'Could not reach Open Food Facts. Enter the values from the label.';
   }
+  if (seq !== scanSeq) return; // the user closed the scanner during the lookup
   $('scanDialog').close();
   openFood(null, { barcode: code, prefill, source, then: (id) => openAmount(id, null) });
 }
@@ -609,6 +670,11 @@ function renderSyncStatus(text) {
   const s = $('syncStatus');
   s.className = 'status';
   if (text) { s.textContent = text; return; }
+  if (saveError) {
+    s.textContent = `Could not save on this device (${saveError}). Keep the app open until it syncs.`;
+    s.classList.add('bad');
+    return;
+  }
   if (!syncConfigured()) { s.textContent = 'Sync is not set up. Tap to set it up.'; s.classList.add('bad'); return; }
   if (meta.lastError) { s.textContent = `Sync failed: ${meta.lastError}. Tap to retry.`; s.classList.add('bad'); return; }
   if (meta.dirty) { s.textContent = 'Waiting to sync…'; return; }
@@ -626,11 +692,22 @@ function renderSyncStatus(text) {
 
 // ---------- Settings ----------
 
-function openSettings() {
+let targetsShown = null; // the targets in the form when it was filled
+
+const formTargets = () =>
+  ({ kcal: num($('tKcal').value), protein: num($('tProtein').value), carbs: num($('tCarbs').value), fat: num($('tFat').value) });
+const targetsEdited = () => JSON.stringify(formTargets()) !== JSON.stringify(targetsShown);
+
+function fillTargets() {
   $('tKcal').value = data.targets.kcal || '';
   $('tProtein').value = data.targets.protein || '';
   $('tCarbs').value = data.targets.carbs || '';
   $('tFat').value = data.targets.fat || '';
+  targetsShown = formTargets();
+}
+
+function openSettings() {
+  fillTargets();
   $('ghRepo').value = meta.repo;
   $('ghToken').value = meta.token;
   $('settingsMsg').textContent = '';
@@ -650,8 +727,7 @@ function applySyncSettings() {
 
 function saveSettings() {
   applySyncSettings();
-  const t = { kcal: num($('tKcal').value), protein: num($('tProtein').value), carbs: num($('tCarbs').value), fat: num($('tFat').value) };
-  if (JSON.stringify(t) !== JSON.stringify(data.targets)) { data.targets = t; data.targetsUpdatedAt = now(); commit(); }
+  if (targetsEdited()) { data.targets = formTargets(); data.targetsUpdatedAt = stamp(data.targetsUpdatedAt); commit(); }
   else render();
   scheduleSync(0);
 }
@@ -692,7 +768,8 @@ $('amountPresetBtn').onclick = () => {
   const food = findFood(amountCtx.foodId);
   const grams = num($('amountGrams').value);
   if (!food || !grams) return;
-  addPreset(prompt('Preset name', `${food.name} ${grams} g`), macrosFor(food, grams), `${food.name} ${grams} g`);
+  const label = `${food.name} ${grams} ${unitOf(food)}`;
+  addPreset(prompt('Preset name', label), macrosFor(food, grams), label);
 };
 $('quickPresetBtn').onclick = () => {
   const m = { kcal: num($('quickKcal').value), protein: num($('quickProtein').value),
@@ -701,7 +778,7 @@ $('quickPresetBtn').onclick = () => {
 };
 $('csvBtn').onclick = exportCsv;
 $('manualBarcodeBtn').onclick = () => handleBarcode($('manualBarcode').value);
-$('scanDialog').addEventListener('close', stopScan);
+$('scanDialog').addEventListener('close', () => { scanSeq++; stopScan(); });
 $('syncStatus').onclick = () => {
   if (!syncConfigured()) openSettings();
   else { meta.lastError = null; saveMeta(); scheduleSync(0); }
@@ -710,6 +787,7 @@ $('syncNowBtn').onclick = async () => {
   applySyncSettings();
   meta.lastError = null;
   await sync();
+  if (!targetsEdited()) fillTargets(); // show targets that came from another device
   $('settingsMsg').textContent = meta.lastError ? `Sync failed: ${meta.lastError}` : 'Synced.';
 };
 
@@ -727,10 +805,19 @@ onSubmit('settingsDialog', saveSettings);
 // online, and every minute while it is open.
 window.addEventListener('online', () => scheduleSync(0));
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') { day = dateKey(new Date()); render(); scheduleSync(0); }
+  if (document.visibilityState !== 'visible') return;
+  if (!document.querySelector('dialog[open]')) day = dateKey(new Date());
+  render();
+  scheduleSync(0);
+});
+// Another tab on this device saved: merge its changes.
+window.addEventListener('storage', (e) => {
+  if (e.key === DATA_KEY) { data = merge(data, normalize(loadJSON(DATA_KEY, {}))); render(); }
 });
 setInterval(() => { if (document.visibilityState === 'visible') scheduleSync(0); }, 60000);
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+// Ask the browser not to clear this app's storage when the device is low on space.
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
 render();
 scheduleSync(0);

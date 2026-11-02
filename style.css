@@ -72,3 +72,8 @@ button.link { background: none; border: none; color: var(--accent); padding: 4px
 .pick li label { display: flex; align-items: center; flex: 1; margin: 0; color: var(--text); font-size: 15px; }
 .pick li .btns { display: flex; gap: 4px; }
 #toast[hidden] { display: none; }
+.row-btn { all: unset; box-sizing: border-box; flex: 1; display: flex; justify-content: space-between; align-items: center;
+  gap: 8px; cursor: pointer; }
+.row-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; border-radius: 6px; }
+select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; }
+label.inline { display: flex; align-items: center; gap: 8px; }
