@@ -31,16 +31,22 @@ function el(tag, cls, text) {
 // Every food and entry has an id and an updatedAt time. A deleted record stays as a
 // tombstone ({ id, deleted, updatedAt }) so that the deletion syncs to other devices.
 
-// Reject data that a merge could damage: every record needs a unique id, and every live
-// record needs a name and numeric macros.
+// Times are compared as text, so they must all have the toISOString() format.
+const validTime = (t) => t == null || (typeof t === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(t));
+
+// Reject data that a merge could damage: every record needs a unique id and a valid time,
+// and every live record needs a name and numeric macros.
 function isValidData(d) {
   if (!d || typeof d !== 'object' || !d.targets || typeof d.targets !== 'object') return false;
+  if (MACROS.some(([k]) => d.targets[k] !== undefined && !Number.isFinite(d.targets[k]))) return false;
+  if (!validTime(d.updatedAt) || !validTime(d.targetsUpdatedAt)) return false;
+  if (!Array.isArray(d.foods) || !Array.isArray(d.entries)) return false;
   for (const key of ['foods', 'entries', 'presets']) {
     const list = d[key] ?? [];
     if (!Array.isArray(list)) return false;
     const ids = new Set();
     for (const r of list) {
-      if (!r || typeof r.id !== 'string' || ids.has(r.id)) return false;
+      if (!r || typeof r.id !== 'string' || ids.has(r.id) || !validTime(r.updatedAt)) return false;
       ids.add(r.id);
       if (r.deleted) continue;
       if (typeof r.name !== 'string' || MACROS.some(([k]) => !Number.isFinite(r[k]))) return false;
@@ -105,11 +111,12 @@ let meta = { repo: 'sammcentee/macro-tracker-data', token: '', dirty: false, las
 let day = dateKey(new Date());
 let changeSeq = 0;
 let saveError = null; // set when this device cannot save its data, for example when storage is full
+let metaError = null; // the same for settings and sync status
 
 function store(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); return null; } catch (err) { return err.name || String(err); }
 }
-function saveMeta() { store(META_KEY, meta); }
+function saveMeta() { metaError = store(META_KEY, meta); }
 // Other tabs on this device share the same storage, so merge what they saved before writing.
 function saveLocal() {
   data = merge(data, normalize(loadJSON(DATA_KEY, {})));
@@ -117,7 +124,8 @@ function saveLocal() {
 }
 
 // Last food amount and time of use stay on this device. They are not edits to the food.
-const usageOf = (foodId) => meta.usage[foodId] || {};
+// Older versions kept them on the food record, so use those until the food is logged again.
+const usageOf = (food) => meta.usage[food.id] || food;
 
 // Every change goes through here: save locally, then sync.
 function commit() {
@@ -221,7 +229,7 @@ function renderFoodList() {
   const q = $('foodSearch').value.trim().toLowerCase();
   const foods = live(data.foods)
     .filter((f) => !q || f.name.toLowerCase().includes(q))
-    .sort((a, b) => (usageOf(b.id).lastUsed || '').localeCompare(usageOf(a.id).lastUsed || '') || a.name.localeCompare(b.name));
+    .sort((a, b) => (usageOf(b).lastUsed || '').localeCompare(usageOf(a).lastUsed || '') || a.name.localeCompare(b.name));
   const list = $('foodList');
   list.replaceChildren();
   for (const f of foods) {
@@ -234,6 +242,7 @@ function renderFoodList() {
 
 // Dialogs keep ids, not objects, because a sync can replace the data while a dialog is open.
 let amountCtx = null; // { foodId, entryId }
+const GONE = 'Not saved: another device deleted this item.';
 
 function openAmount(foodId, entryId) {
   const food = findFood(foodId);
@@ -242,7 +251,7 @@ function openAmount(foodId, entryId) {
   amountCtx = { foodId, entryId };
   $('amountTitle').textContent = food.name;
   $('amountUnit').textContent = unitOf(food);
-  $('amountGrams').value = entry ? entry.grams : (usageOf(food.id).lastGrams || food.serving || 100);
+  $('amountGrams').value = entry ? entry.grams : (usageOf(food).lastGrams || food.serving || 100);
   const sb = $('servingButtons');
   sb.replaceChildren();
   if (food.serving) {
@@ -270,9 +279,11 @@ function updateAmountPreview() {
 function saveAmount() {
   const food = findFood(amountCtx.foodId);
   const grams = num($('amountGrams').value);
-  if (!food || !grams) return;
+  if (!food) return showToast(GONE);
+  if (!grams) return;
   const values = { name: food.name, grams, unit: unitOf(food), foodId: food.id, ...macrosFor(food, grams) };
   const entry = amountCtx.entryId && findEntry(amountCtx.entryId);
+  if (amountCtx.entryId && !entry) return showToast(GONE);
   if (entry) Object.assign(entry, values, { updatedAt: stamp(entry.updatedAt) });
   else data.entries.push({ id: uid(), date: day, time: now(), ...values, updatedAt: now() });
   meta.usage[food.id] = { lastUsed: now(), lastGrams: grams };
@@ -314,6 +325,7 @@ function saveFood() {
     unit: $('foodUnit').value,
   };
   let food = foodCtx.foodId && findFood(foodCtx.foodId);
+  if (foodCtx.foodId && !food) return showToast(GONE);
   if (food) Object.assign(food, values, { updatedAt: stamp(food.updatedAt) });
   else {
     food = { id: uid(), barcode: foodCtx.barcode, ...values, updatedAt: now() };
@@ -345,6 +357,7 @@ function saveQuick() {
     carbs: num($('quickCarbs').value), fat: num($('quickFat').value),
   };
   const entry = quickId && findEntry(quickId);
+  if (quickId && !entry) return showToast(GONE);
   if (entry) Object.assign(entry, values, { updatedAt: stamp(entry.updatedAt) });
   else data.entries.push({ id: uid(), date: day, time: now(), ...values, updatedAt: now() });
   commit();
@@ -475,7 +488,7 @@ function saveMealPreset() {
 
 function csvCell(v) {
   let t = v == null ? '' : String(v);
-  if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; // stop Excel from reading a name as a formula
+  if (/^[=+\-@\t\r\n]/.test(t)) t = "'" + t; // stop Excel from reading a name as a formula
   return /[",\r\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
 }
 
@@ -504,16 +517,21 @@ async function exportCsv() {
 // ---------- Barcode scanning ----------
 
 let reader = null;
-let scanSeq = 0; // goes up each time the scan dialog closes, so late results are ignored
+let scanSeq = 0; // goes up each time the scanner opens or closes, so late results are ignored
 
 async function openScan() {
+  scanSeq++;
   $('scanMsg').textContent = 'Point the camera at the barcode.';
   $('manualBarcode').value = '';
+  // A new video element for each scan, so that a camera from an earlier scan that starts
+  // late, and is then stopped, cannot clear this one.
+  const video = $('scanVideo').cloneNode(false);
+  $('scanVideo').replaceWith(video);
   $('scanDialog').showModal();
   const r = new ZXing.BrowserMultiFormatReader();
   reader = r;
   try {
-    await r.decodeFromConstraints({ video: { facingMode: { ideal: 'environment' } } }, $('scanVideo'), (result) => {
+    await r.decodeFromConstraints({ video: { facingMode: { ideal: 'environment' } } }, video, (result) => {
       if (result && reader === r) handleBarcode(result.getText());
     });
     if (reader !== r) r.reset(); // the dialog closed while the camera started
@@ -558,7 +576,7 @@ async function handleBarcode(code) {
   } catch {
     source = 'Could not reach Open Food Facts. Enter the values from the label.';
   }
-  if (seq !== scanSeq) return; // the user closed the scanner during the lookup
+  if (seq !== scanSeq || !$('scanDialog').open) return; // the user closed the scanner during the lookup
   $('scanDialog').close();
   openFood(null, { barcode: code, prefill, source, then: (id) => openAmount(id, null) });
 }
@@ -568,7 +586,7 @@ async function handleBarcode(code) {
 // and writes it back only if something changed. Git keeps every earlier version.
 
 let syncTimer = null;
-let syncRunning = false;
+let syncPromise = null; // the sync in progress, so that a caller can wait for it
 let syncAgain = false;
 
 const syncConfigured = () => Boolean(meta.repo && meta.token);
@@ -629,10 +647,14 @@ async function readRemote() {
   return { remote: normalize(parsed), sha: file.sha };
 }
 
-async function sync() {
-  if (!syncConfigured()) return;
-  if (syncRunning) { syncAgain = true; return; }
-  syncRunning = true;
+function sync() {
+  if (!syncConfigured()) return Promise.resolve();
+  if (syncPromise) { syncAgain = true; return syncPromise; }
+  syncPromise = syncOnce().finally(() => { syncPromise = null; });
+  return syncPromise;
+}
+
+async function syncOnce() {
   const seq = changeSeq;
   renderSyncStatus('Syncing…');
   try {
@@ -659,7 +681,6 @@ async function sync() {
   } catch (err) {
     meta.lastError = err.message || String(err);
   } finally {
-    syncRunning = false;
     saveMeta();
     renderSyncStatus();
     if (syncAgain || (meta.dirty && !meta.lastError)) { syncAgain = false; scheduleSync(); }
@@ -670,8 +691,8 @@ function renderSyncStatus(text) {
   const s = $('syncStatus');
   s.className = 'status';
   if (text) { s.textContent = text; return; }
-  if (saveError) {
-    s.textContent = `Could not save on this device (${saveError}). Keep the app open until it syncs.`;
+  if (saveError || metaError) {
+    s.textContent = `Could not save on this device (${saveError || metaError}). Keep the app open until it syncs.`;
     s.classList.add('bad');
     return;
   }
@@ -692,22 +713,24 @@ function renderSyncStatus(text) {
 
 // ---------- Settings ----------
 
-let targetsShown = null; // the targets in the form when it was filled
+const TARGET_INPUTS = { kcal: 'tKcal', protein: 'tProtein', carbs: 'tCarbs', fat: 'tFat' };
+let targetsShown = {}; // the value that each target field showed, to find the fields that the user edited
 
-const formTargets = () =>
-  ({ kcal: num($('tKcal').value), protein: num($('tProtein').value), carbs: num($('tCarbs').value), fat: num($('tFat').value) });
-const targetsEdited = () => JSON.stringify(formTargets()) !== JSON.stringify(targetsShown);
+const formTarget = (k) => num($(TARGET_INPUTS[k]).value);
+const editedTargets = () => Object.keys(TARGET_INPUTS).filter((k) => formTarget(k) !== targetsShown[k]);
 
-function fillTargets() {
-  $('tKcal').value = data.targets.kcal || '';
-  $('tProtein').value = data.targets.protein || '';
-  $('tCarbs').value = data.targets.carbs || '';
-  $('tFat').value = data.targets.fat || '';
-  targetsShown = formTargets();
+// Put the current targets in the form. Keep the fields that the user edited, unless all is true.
+function fillTargets(all) {
+  const edited = all ? [] : editedTargets();
+  for (const k of Object.keys(TARGET_INPUTS)) {
+    if (edited.includes(k)) continue;
+    $(TARGET_INPUTS[k]).value = data.targets[k] || '';
+    targetsShown[k] = formTarget(k);
+  }
 }
 
 function openSettings() {
-  fillTargets();
+  fillTargets(true);
   $('ghRepo').value = meta.repo;
   $('ghToken').value = meta.token;
   $('settingsMsg').textContent = '';
@@ -725,11 +748,15 @@ function applySyncSettings() {
   }
 }
 
-function saveSettings() {
+async function saveSettings() {
   applySyncSettings();
-  if (targetsEdited()) { data.targets = formTargets(); data.targetsUpdatedAt = stamp(data.targetsUpdatedAt); commit(); }
-  else render();
-  scheduleSync(0);
+  const edited = editedTargets();
+  if (!edited.length) { render(); scheduleSync(0); return; }
+  const values = Object.fromEntries(edited.map((k) => [k, formTarget(k)]));
+  await sync(); // get the targets from other devices first, so that only the edited fields change
+  data.targets = { ...data.targets, ...values };
+  data.targetsUpdatedAt = stamp(data.targetsUpdatedAt);
+  commit();
 }
 
 // ---------- Wiring ----------
@@ -787,7 +814,7 @@ $('syncNowBtn').onclick = async () => {
   applySyncSettings();
   meta.lastError = null;
   await sync();
-  if (!targetsEdited()) fillTargets(); // show targets that came from another device
+  fillTargets(false); // show targets that came from another device in the fields not edited here
   $('settingsMsg').textContent = meta.lastError ? `Sync failed: ${meta.lastError}` : 'Synced.';
 };
 
@@ -810,9 +837,20 @@ document.addEventListener('visibilitychange', () => {
   render();
   scheduleSync(0);
 });
-// Another tab on this device saved: merge its changes.
+// Another tab on this device saved. Take its changes. If this tab has changes that the other
+// tab wrote over (two saves at the same moment), save them again.
 window.addEventListener('storage', (e) => {
-  if (e.key === DATA_KEY) { data = merge(data, normalize(loadJSON(DATA_KEY, {}))); render(); }
+  if (e.key === DATA_KEY) {
+    const stored = normalize(loadJSON(DATA_KEY, {}));
+    data = merge(data, stored);
+    if (JSON.stringify(data) !== JSON.stringify(stored)) saveError = store(DATA_KEY, data);
+    render();
+  } else if (e.key === META_KEY) {
+    // Keep the sync settings from the other tab, so that a later save here does not undo them.
+    const m = loadJSON(META_KEY, {});
+    Object.assign(meta, { repo: m.repo ?? meta.repo, token: m.token ?? meta.token, usage: { ...meta.usage, ...m.usage } });
+    render();
+  }
 });
 setInterval(() => { if (document.visibilityState === 'visible') scheduleSync(0); }, 60000);
 

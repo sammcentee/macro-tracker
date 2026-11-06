@@ -16,6 +16,11 @@ A small calorie and macro tracker for iPhone. It is a web app that you add to th
 
 The app syncs when it opens, after each change, and every minute while it is open. Each change makes one commit to `data.json`, so Git keeps every earlier version. If two devices change different things, the app keeps both changes. If two devices change the same entry, the later change wins, by the clocks of the devices. If the file in GitHub is damaged, the app does not change it and shows an error.
 
+## Tests
+
+- `node tests/unit.mjs .` checks the merge, data checks, CSV cells, and the service worker.
+- `tests/mockgh.py` is a fake GitHub Contents API for sync tests in a browser. It never touches GitHub.
+
 ## Licences
 
 The app code is MIT. `vendor/zxing.min.js` is [ZXing](https://github.com/zxing-js/library) (Apache-2.0, see `vendor/ZXING-LICENSE`).
