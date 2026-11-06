@@ -31,8 +31,8 @@ function el(tag, cls, text) {
 // Every food and entry has an id and an updatedAt time. A deleted record stays as a
 // tombstone ({ id, deleted, updatedAt }) so that the deletion syncs to other devices.
 
-// Times are compared as text, so they must all have the toISOString() format.
-const validTime = (t) => t == null || (typeof t === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(t));
+// Times are compared as text, so they must all be real dates in the toISOString() format.
+const validTime = (t) => t == null || (typeof t === 'string' && !Number.isNaN(Date.parse(t)) && new Date(t).toISOString() === t);
 
 // Reject data that a merge could damage: every record needs a unique id and a valid time,
 // and every live record needs a name and numeric macros.
@@ -40,6 +40,7 @@ function isValidData(d) {
   if (!d || typeof d !== 'object' || !d.targets || typeof d.targets !== 'object') return false;
   if (MACROS.some(([k]) => d.targets[k] !== undefined && !Number.isFinite(d.targets[k]))) return false;
   if (!validTime(d.updatedAt) || !validTime(d.targetsUpdatedAt)) return false;
+  if (d.targetTimes !== undefined && (!d.targetTimes || MACROS.some(([k]) => !validTime(d.targetTimes[k])))) return false;
   if (!Array.isArray(d.foods) || !Array.isArray(d.entries)) return false;
   for (const key of ['foods', 'entries', 'presets']) {
     const list = d[key] ?? [];
@@ -66,13 +67,16 @@ const isNewer = (time, other, value, otherValue) =>
   time > other || (time === other && JSON.stringify(value) > JSON.stringify(otherValue));
 
 // Bring any saved data (including the first version, without updatedAt) to the current shape.
+// Each daily target has its own time, so that a change to one target does not undo the others.
+// Older versions had one time (targetsUpdatedAt) for all four.
 function normalize(d) {
   const t0 = d.updatedAt || EPOCH;
   const fix = (list) => (list || []).map((r) => ({ ...r, updatedAt: r.updatedAt || t0 })).sort(byId);
+  const times = d.targetTimes || {};
   return {
     version: 2,
     targets: { kcal: 0, protein: 0, carbs: 0, fat: 0, ...d.targets },
-    targetsUpdatedAt: d.targetsUpdatedAt || t0,
+    targetTimes: Object.fromEntries(MACROS.map(([k]) => [k, times[k] || d.targetsUpdatedAt || t0])),
     foods: fix(d.foods),
     entries: fix(d.entries),
     presets: fix(d.presets),
@@ -90,11 +94,17 @@ function merge(a, b) {
     }
     return [...map.values()].sort(byId);
   };
-  const bNewer = isNewer(b.targetsUpdatedAt, a.targetsUpdatedAt, b.targets, a.targets);
+  const targets = {};
+  const targetTimes = {};
+  for (const [k] of MACROS) {
+    const src = isNewer(b.targetTimes[k], a.targetTimes[k], b.targets[k], a.targets[k]) ? b : a;
+    targets[k] = src.targets[k];
+    targetTimes[k] = src.targetTimes[k];
+  }
   return {
     version: 2,
-    targets: bNewer ? b.targets : a.targets,
-    targetsUpdatedAt: bNewer ? b.targetsUpdatedAt : a.targetsUpdatedAt,
+    targets,
+    targetTimes,
     foods: mergeList(a.foods, b.foods),
     entries: mergeList(a.entries, b.entries),
     presets: mergeList(a.presets, b.presets),
@@ -729,33 +739,39 @@ function fillTargets(all) {
   }
 }
 
+let syncShown = {}; // the repo and token that the form showed
+
 function openSettings() {
   fillTargets(true);
   $('ghRepo').value = meta.repo;
   $('ghToken').value = meta.token;
+  syncShown = { repo: meta.repo, token: meta.token };
   $('settingsMsg').textContent = '';
   $('settingsDialog').showModal();
 }
 
+// Save only the fields that the user edited: another tab can change them while the form is open.
 function applySyncSettings() {
   const repo = $('ghRepo').value.trim();
   const token = $('ghToken').value.trim();
-  if (repo !== meta.repo || token !== meta.token) {
-    meta.repo = repo;
-    meta.token = token;
-    meta.lastError = null;
-    saveMeta();
-  }
+  if (repo === syncShown.repo && token === syncShown.token) return;
+  if (repo !== syncShown.repo) meta.repo = repo;
+  if (token !== syncShown.token) meta.token = token;
+  syncShown = { repo, token };
+  meta.lastError = null;
+  saveMeta();
 }
 
-async function saveSettings() {
+function saveSettings() {
   applySyncSettings();
   const edited = editedTargets();
   if (!edited.length) { render(); scheduleSync(0); return; }
-  const values = Object.fromEntries(edited.map((k) => [k, formTarget(k)]));
-  await sync(); // get the targets from other devices first, so that only the edited fields change
-  data.targets = { ...data.targets, ...values };
-  data.targetsUpdatedAt = stamp(data.targetsUpdatedAt);
+  data.targets = { ...data.targets };
+  data.targetTimes = { ...data.targetTimes };
+  for (const k of edited) {
+    data.targets[k] = formTarget(k);
+    data.targetTimes[k] = stamp(data.targetTimes[k]);
+  }
   commit();
 }
 
@@ -841,8 +857,11 @@ document.addEventListener('visibilitychange', () => {
 // tab wrote over (two saves at the same moment), save them again.
 window.addEventListener('storage', (e) => {
   if (e.key === DATA_KEY) {
+    // Merge the copy in the event too: this tab can have written over it already.
+    let incoming = {};
+    try { incoming = JSON.parse(e.newValue) || {}; } catch { /* not valid JSON: ignore */ }
     const stored = normalize(loadJSON(DATA_KEY, {}));
-    data = merge(data, stored);
+    data = merge(merge(data, normalize(incoming)), stored);
     if (JSON.stringify(data) !== JSON.stringify(stored)) saveError = store(DATA_KEY, data);
     render();
   } else if (e.key === META_KEY) {

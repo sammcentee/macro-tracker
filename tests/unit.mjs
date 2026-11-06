@@ -22,10 +22,24 @@ ok('equal times converge in both merge orders', () => {
   const B = doc([rec('e1', '2026-11-01T10:00:00.000Z', { kcal: 200 })]);
   assert.deepEqual(plain(merge(A, B)), plain(merge(B, A)));
 });
+const withTargets = (targets, times) => f.normalize({ targets, targetTimes: times, foods: [], entries: [] });
+const T1 = '2026-11-01T10:00:00.000Z';
+const T2 = '2026-11-02T10:00:00.000Z';
 ok('equal target times converge', () => {
-  const A = { ...doc([]), targets: { kcal: 2000, protein: 0, carbs: 0, fat: 0 }, targetsUpdatedAt: '2026-11-01T10:00:00.000Z' };
-  const B = { ...doc([]), targets: { kcal: 2500, protein: 0, carbs: 0, fat: 0 }, targetsUpdatedAt: '2026-11-01T10:00:00.000Z' };
-  assert.equal(merge(A, B).targets.kcal, merge(B, A).targets.kcal);
+  const A = withTargets({ kcal: 2000 }, { kcal: T1, protein: T1, carbs: T1, fat: T1 });
+  const B = withTargets({ kcal: 2500 }, { kcal: T1, protein: T1, carbs: T1, fat: T1 });
+  assert.deepEqual(plain(merge(A, B)), plain(merge(B, A)));
+});
+ok('each target merges on its own time', () => {
+  const remote = withTargets({ kcal: 2000, protein: 150, carbs: 300, fat: 80 }, { kcal: T1, protein: T1, carbs: T1, fat: T1 });
+  const freshDeviceEditedKcal = withTargets({ kcal: 2200, protein: 0, carbs: 0, fat: 0 }, { kcal: T2 }); // others: epoch
+  assert.deepEqual(plain(merge(freshDeviceEditedKcal, remote).targets), { kcal: 2200, protein: 150, carbs: 300, fat: 80 });
+  assert.deepEqual(plain(merge(remote, freshDeviceEditedKcal).targets), { kcal: 2200, protein: 150, carbs: 300, fat: 80 });
+});
+ok('the old single target time becomes four field times', () => {
+  const old = f.normalize({ targets: { kcal: 2600 }, targetsUpdatedAt: T1, foods: [], entries: [] });
+  assert.deepEqual(plain(old.targetTimes), { kcal: T1, protein: T1, carbs: T1, fat: T1 });
+  assert.equal('targetsUpdatedAt' in old, false);
 });
 ok('stamp is later than a version from a fast clock', () => {
   const future = '2030-01-01T00:00:00.000Z';
@@ -60,6 +74,11 @@ ok('validation: times must be toISOString format; null and missing are allowed',
   assert.equal(f.isValidData({ ...base, entries: [rec('e1', '2026-11-01')] }), false);
   assert.equal(f.isValidData({ ...base, entries: [{ id: 'x', deleted: true, updatedAt: 'zzz' }] }), false);
   assert.equal(f.isValidData({ ...base, targetsUpdatedAt: 'later' }), false);
+  assert.equal(f.isValidData({ ...base, entries: [rec('e1', '2026-13-06T10:00:00.000Z')] }), false); // month 13
+  assert.equal(f.isValidData({ ...base, entries: [rec('e1', '2026-02-30T10:00:00.000Z')] }), false); // 30 February
+  assert.equal(f.isValidData({ ...base, targetTimes: { kcal: T1, protein: T1, carbs: T1, fat: 'x' } }), false);
+  assert.equal(f.isValidData({ ...base, targetTimes: null }), false);
+  assert.equal(f.isValidData({ ...base, targetTimes: { kcal: T1, protein: T1, carbs: T1, fat: T1 } }), true);
   assert.equal(f.isValidData({ ...base, entries: [rec('e1', undefined)] }), true);
   assert.equal(f.isValidData({ ...base, updatedAt: null }), true); // version 1 empty data had updatedAt: null
 });
