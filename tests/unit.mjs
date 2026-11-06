@@ -78,6 +78,7 @@ ok('validation: times must be toISOString format; null and missing are allowed',
   assert.equal(f.isValidData({ ...base, entries: [rec('e1', '2026-02-30T10:00:00.000Z')] }), false); // 30 February
   assert.equal(f.isValidData({ ...base, targetTimes: { kcal: T1, protein: T1, carbs: T1, fat: 'x' } }), false);
   assert.equal(f.isValidData({ ...base, targetTimes: null }), false);
+  for (const bad of [123, 'bad', true, []]) assert.equal(f.isValidData({ ...base, targetTimes: bad }), false);
   assert.equal(f.isValidData({ ...base, targetTimes: { kcal: T1, protein: T1, carbs: T1, fat: T1 } }), true);
   assert.equal(f.isValidData({ ...base, entries: [rec('e1', undefined)] }), true);
   assert.equal(f.isValidData({ ...base, updatedAt: null }), true); // version 1 empty data had updatedAt: null

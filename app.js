@@ -40,7 +40,8 @@ function isValidData(d) {
   if (!d || typeof d !== 'object' || !d.targets || typeof d.targets !== 'object') return false;
   if (MACROS.some(([k]) => d.targets[k] !== undefined && !Number.isFinite(d.targets[k]))) return false;
   if (!validTime(d.updatedAt) || !validTime(d.targetsUpdatedAt)) return false;
-  if (d.targetTimes !== undefined && (!d.targetTimes || MACROS.some(([k]) => !validTime(d.targetTimes[k])))) return false;
+  const tt = d.targetTimes;
+  if (tt !== undefined && (!tt || typeof tt !== 'object' || Array.isArray(tt) || MACROS.some(([k]) => !validTime(tt[k])))) return false;
   if (!Array.isArray(d.foods) || !Array.isArray(d.entries)) return false;
   for (const key of ['foods', 'entries', 'presets']) {
     const list = d[key] ?? [];
